@@ -1,4 +1,6 @@
 import * as Haptics from "expo-haptics";
+import * as AppleAuthentication from "expo-apple-authentication";
+import * as Google from "expo-auth-session/providers/google";
 import { Link, router } from "expo-router";
 import { useState } from "react";
 import { Text, View } from "react-native";
@@ -11,17 +13,34 @@ import { theme, useAppPalette } from "@/constants/theme";
 import { useAppleLogin, useGoogleLogin, useLogin, useWechatLogin } from "@/services/queries/use-auth";
 import { ApiError } from "@/types/api";
 import { useI18n } from "@/utils/i18n";
-import { getSocialLoginSeed } from "@/utils/social-login";
+import {
+  formatAppleDisplayName,
+  getGoogleNativeConfig,
+  getSocialLoginSeed,
+  hasGoogleNativeConfig,
+} from "@/utils/social-login";
 
 export default function LoginScreen() {
   const palette = useAppPalette();
   const { t } = useI18n();
   const [phone, setPhone] = useState("");
   const [password, setPassword] = useState("");
+  const [oauthError, setOauthError] = useState<string>();
   const loginMutation = useLogin();
   const wechatLoginMutation = useWechatLogin();
   const appleLoginMutation = useAppleLogin();
   const googleLoginMutation = useGoogleLogin();
+  const googleNativeConfig = getGoogleNativeConfig();
+  const [googleRequest, , promptGoogle] = Google.useIdTokenAuthRequest(
+    {
+      webClientId: googleNativeConfig.webClientId ?? "petverse-placeholder-web.apps.googleusercontent.com",
+      iosClientId: googleNativeConfig.iosClientId ?? "petverse-placeholder-ios.apps.googleusercontent.com",
+      androidClientId: googleNativeConfig.androidClientId ?? "petverse-placeholder-android.apps.googleusercontent.com",
+    },
+    {
+      native: "petverse:/oauthredirect",
+    },
+  );
 
   const errorMessage =
     loginMutation.error instanceof ApiError
@@ -32,42 +51,119 @@ export default function LoginScreen() {
           ? appleLoginMutation.error.message
           : googleLoginMutation.error instanceof ApiError
             ? googleLoginMutation.error.message
-          : undefined;
+            : oauthError;
 
   async function handleLogin() {
+    setOauthError(undefined);
     await loginMutation.mutateAsync({ phone, password });
-    await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => null);
-    router.replace("/(tabs)");
+    await finishLogin();
   }
 
   async function handleWechatLogin() {
+    setOauthError(undefined);
     const openId = await getSocialLoginSeed("wechat");
     await wechatLoginMutation.mutateAsync({
       open_id: openId,
       nickname: t("auth.login.wechatDemoName"),
     });
-    await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => null);
-    router.replace("/(tabs)");
+    await finishLogin();
   }
 
   async function handleAppleLogin() {
+    setOauthError(undefined);
+
+    const available = await AppleAuthentication.isAvailableAsync().catch(() => false);
+    if (!available) {
+      await loginWithAppleDemo();
+      return;
+    }
+
+    let credential: AppleAuthentication.AppleAuthenticationCredential;
+    try {
+      credential = await AppleAuthentication.signInAsync({
+        requestedScopes: [
+          AppleAuthentication.AppleAuthenticationScope.FULL_NAME,
+          AppleAuthentication.AppleAuthenticationScope.EMAIL,
+        ],
+      });
+    } catch (error) {
+      if (isCanceledError(error)) {
+        return;
+      }
+      await loginWithAppleDemo();
+      return;
+    }
+
+    if (!credential.identityToken) {
+      await loginWithAppleDemo();
+      return;
+    }
+
+    await appleLoginMutation.mutateAsync({
+      apple_id: credential.user,
+      identity_token: credential.identityToken,
+      nickname: formatAppleDisplayName(credential.fullName),
+      email: credential.email ?? undefined,
+    });
+    await finishLogin();
+  }
+
+  async function handleGoogleLogin() {
+    setOauthError(undefined);
+
+    if (!hasGoogleNativeConfig()) {
+      await loginWithGoogleDemo();
+      return;
+    }
+    if (!googleRequest) {
+      setOauthError(t("auth.login.socialError"));
+      return;
+    }
+
+    try {
+      const result = await promptGoogle();
+      if (result.type !== "success") {
+        return;
+      }
+
+      const identityToken = result.params.id_token || result.authentication?.idToken;
+      if (!identityToken) {
+        throw new Error("missing Google identity token");
+      }
+
+      await googleLoginMutation.mutateAsync({
+        identity_token: identityToken,
+      });
+      await finishLogin();
+    } catch (error) {
+      if (isCanceledError(error)) {
+        return;
+      }
+      setOauthError(error instanceof Error ? error.message : t("auth.login.socialError"));
+    }
+  }
+
+  async function loginWithAppleDemo() {
     const appleId = await getSocialLoginSeed("apple");
     await appleLoginMutation.mutateAsync({
       apple_id: appleId,
       nickname: t("auth.login.appleDemoName"),
       email: `${appleId}@petverse.local`,
     });
-    await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => null);
-    router.replace("/(tabs)");
+    await finishLogin();
   }
 
-  async function handleGoogleLogin() {
+  async function loginWithGoogleDemo() {
     const googleId = await getSocialLoginSeed("google");
     await googleLoginMutation.mutateAsync({
       google_id: googleId,
       nickname: t("auth.login.googleDemoName"),
       email: `${googleId}@petverse.local`,
     });
+    await finishLogin();
+  }
+
+  async function finishLogin() {
     await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => null);
     router.replace("/(tabs)");
   }
@@ -137,5 +233,12 @@ export default function LoginScreen() {
         </View>
       </SectionCard>
     </Screen>
+  );
+}
+
+function isCanceledError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    (error.message.includes("cancel") || error.message.includes("canceled"))
   );
 }

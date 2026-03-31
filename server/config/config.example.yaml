@@ -44,6 +44,12 @@ jwt:
   access_ttl: 15m
   refresh_ttl: 168h
 
+social_auth:
+  google_client_ids: []
+  apple_audiences: []
+  http_timeout: 10s
+  cache_ttl: 1h
+
 ai:
   provider: local
   base_url: ""

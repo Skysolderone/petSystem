@@ -20,14 +20,16 @@ interface WechatLoginPayload {
 }
 
 interface AppleLoginPayload {
-  apple_id: string;
+  apple_id?: string;
+  identity_token?: string;
   email?: string;
   nickname?: string;
   avatar_url?: string;
 }
 
 interface GoogleLoginPayload {
-  google_id: string;
+  google_id?: string;
+  identity_token?: string;
   email?: string;
   nickname?: string;
   avatar_url?: string;

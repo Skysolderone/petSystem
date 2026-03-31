@@ -17,6 +17,7 @@ type Config struct {
 	Redis         RedisConfig         `mapstructure:"redis"`
 	NATS          NATSConfig          `mapstructure:"nats"`
 	JWT           JWTConfig           `mapstructure:"jwt"`
+	SocialAuth    SocialAuthConfig    `mapstructure:"social_auth"`
 	AI            AIConfig            `mapstructure:"ai"`
 	Push          PushConfig          `mapstructure:"push"`
 	ObjectStorage ObjectStorageConfig `mapstructure:"object_storage"`
@@ -100,6 +101,13 @@ type JWTConfig struct {
 	Secret     string        `mapstructure:"secret"`
 	AccessTTL  time.Duration `mapstructure:"access_ttl"`
 	RefreshTTL time.Duration `mapstructure:"refresh_ttl"`
+}
+
+type SocialAuthConfig struct {
+	GoogleClientIDs []string      `mapstructure:"google_client_ids"`
+	AppleAudiences  []string      `mapstructure:"apple_audiences"`
+	HTTPTimeout     time.Duration `mapstructure:"http_timeout"`
+	CacheTTL        time.Duration `mapstructure:"cache_ttl"`
 }
 
 type AIConfig struct {
@@ -192,6 +200,11 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("jwt.secret", "change-me-in-production")
 	v.SetDefault("jwt.access_ttl", "15m")
 	v.SetDefault("jwt.refresh_ttl", "168h")
+
+	v.SetDefault("social_auth.google_client_ids", []string{})
+	v.SetDefault("social_auth.apple_audiences", []string{})
+	v.SetDefault("social_auth.http_timeout", "10s")
+	v.SetDefault("social_auth.cache_ttl", "1h")
 
 	v.SetDefault("ai.provider", "local")
 	v.SetDefault("ai.base_url", "")

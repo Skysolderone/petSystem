@@ -11,6 +11,7 @@ import (
 	"petverse/server/internal/model"
 	petjwt "petverse/server/internal/pkg/jwt"
 	"petverse/server/internal/pkg/password"
+	"petverse/server/internal/pkg/socialauth"
 )
 
 type fakeUserRepo struct {
@@ -20,6 +21,18 @@ type fakeUserRepo struct {
 	usersByWechat map[string]*model.User
 	usersByApple  map[string]*model.User
 	usersByGoogle map[string]*model.User
+}
+
+type fakeSocialVerifier struct {
+	identity *socialauth.Identity
+	err      error
+}
+
+func (f fakeSocialVerifier) VerifyIDToken(_ context.Context, _ string) (*socialauth.Identity, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.identity, nil
 }
 
 func newFakeUserRepo() *fakeUserRepo {
@@ -176,5 +189,90 @@ func TestAuthServiceRefresh(t *testing.T) {
 	}
 	if refreshedTokens.AccessToken == "" || refreshedTokens.RefreshToken == "" {
 		t.Fatal("Refresh() did not issue new tokens")
+	}
+}
+
+func TestAuthServiceLoginWithGoogleIdentityToken(t *testing.T) {
+	t.Parallel()
+
+	repo := newFakeUserRepo()
+	tokens := petjwt.NewManager("secret", "test", 15*time.Minute, time.Hour)
+	service := NewAuthService(
+		repo,
+		tokens,
+		WithGoogleVerifier(fakeSocialVerifier{
+			identity: &socialauth.Identity{
+				Subject: "google-real-user",
+				Email:   "google.real@example.com",
+				Name:    "Google Real User",
+				Picture: "https://example.com/google.png",
+			},
+		}),
+	)
+
+	user, tokenPair, err := service.LoginWithGoogle(context.Background(), dto.GoogleLoginRequest{
+		IdentityToken: "google.jwt.token",
+	})
+	if err != nil {
+		t.Fatalf("LoginWithGoogle() error = %v", err)
+	}
+	if user.GoogleID == nil || *user.GoogleID != "google-real-user" {
+		t.Fatalf("unexpected google id: %+v", user)
+	}
+	if user.Email == nil || *user.Email != "google.real@example.com" {
+		t.Fatalf("unexpected email: %+v", user)
+	}
+	if user.AvatarURL != "https://example.com/google.png" {
+		t.Fatalf("unexpected avatar: %+v", user)
+	}
+	if tokenPair.AccessToken == "" || tokenPair.RefreshToken == "" {
+		t.Fatal("LoginWithGoogle() did not issue tokens")
+	}
+}
+
+func TestAuthServiceLoginWithAppleIdentityTokenBindsExistingEmail(t *testing.T) {
+	t.Parallel()
+
+	repo := newFakeUserRepo()
+	tokens := petjwt.NewManager("secret", "test", 15*time.Minute, time.Hour)
+
+	hashedPassword, err := password.Hash("strong-pass")
+	if err != nil {
+		t.Fatalf("password.Hash() error = %v", err)
+	}
+	email := "apple.bind@example.com"
+	existingUser := &model.User{
+		ID:       uuid.New(),
+		Email:    &email,
+		Password: hashedPassword,
+		Nickname: "Existing User",
+	}
+	if err := repo.Create(context.Background(), existingUser); err != nil {
+		t.Fatalf("repo.Create() error = %v", err)
+	}
+
+	service := NewAuthService(
+		repo,
+		tokens,
+		WithAppleVerifier(fakeSocialVerifier{
+			identity: &socialauth.Identity{
+				Subject: "apple-real-user",
+				Email:   email,
+				Name:    "Apple Real User",
+			},
+		}),
+	)
+
+	user, _, err := service.LoginWithApple(context.Background(), dto.AppleLoginRequest{
+		IdentityToken: "apple.jwt.token",
+	})
+	if err != nil {
+		t.Fatalf("LoginWithApple() error = %v", err)
+	}
+	if user.ID != existingUser.ID {
+		t.Fatalf("LoginWithApple() returned wrong user: got %s want %s", user.ID, existingUser.ID)
+	}
+	if user.AppleID == nil || *user.AppleID != "apple-real-user" {
+		t.Fatalf("expected bound apple id, got %+v", user)
 	}
 }

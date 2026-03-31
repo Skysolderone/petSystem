@@ -22,6 +22,7 @@ import (
 	"petverse/server/internal/pkg/events"
 	"petverse/server/internal/pkg/jwt"
 	"petverse/server/internal/pkg/push"
+	"petverse/server/internal/pkg/socialauth"
 	"petverse/server/internal/pkg/timeseries"
 	"petverse/server/internal/pkg/upload"
 	"petverse/server/internal/repository"
@@ -127,7 +128,12 @@ func main() {
 		Timeout:     cfg.Push.Timeout,
 	})
 
-	authService := service.NewAuthService(userRepo, tokenManager)
+	authService := service.NewAuthService(
+		userRepo,
+		tokenManager,
+		service.WithAppleVerifier(buildAppleVerifier(cfg.SocialAuth)),
+		service.WithGoogleVerifier(buildGoogleVerifier(cfg.SocialAuth)),
+	)
 	userService := service.NewUserService(userRepo)
 	petService := service.NewPetService(petRepo)
 	wsHub := ws.NewHub()
@@ -234,4 +240,30 @@ func buildUploader(cfg config.ObjectStorageConfig) (upload.Store, error) {
 	default:
 		return nil, fmt.Errorf("unsupported object storage provider: %s", cfg.Provider)
 	}
+}
+
+func buildAppleVerifier(cfg config.SocialAuthConfig) socialauth.Verifier {
+	if len(cfg.AppleAudiences) == 0 {
+		return nil
+	}
+	return socialauth.NewOIDCVerifier(socialauth.OIDCVerifierConfig{
+		JWKSURL:          socialauth.AppleJWKSURL,
+		AllowedIssuers:   []string{"https://appleid.apple.com"},
+		AllowedAudiences: cfg.AppleAudiences,
+		HTTPTimeout:      cfg.HTTPTimeout,
+		CacheTTL:         cfg.CacheTTL,
+	})
+}
+
+func buildGoogleVerifier(cfg config.SocialAuthConfig) socialauth.Verifier {
+	if len(cfg.GoogleClientIDs) == 0 {
+		return nil
+	}
+	return socialauth.NewOIDCVerifier(socialauth.OIDCVerifierConfig{
+		JWKSURL:          socialauth.GoogleJWKSURL,
+		AllowedIssuers:   []string{"https://accounts.google.com", "accounts.google.com"},
+		AllowedAudiences: cfg.GoogleClientIDs,
+		HTTPTimeout:      cfg.HTTPTimeout,
+		CacheTTL:         cfg.CacheTTL,
+	})
 }

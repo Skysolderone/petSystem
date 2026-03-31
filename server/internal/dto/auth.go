@@ -18,17 +18,19 @@ type WechatLoginRequest struct {
 }
 
 type AppleLoginRequest struct {
-	AppleID   string  `json:"apple_id" binding:"required,min=3,max=100"`
-	Email     *string `json:"email"`
-	Nickname  string  `json:"nickname"`
-	AvatarURL string  `json:"avatar_url"`
+	AppleID       string  `json:"apple_id"`
+	IdentityToken string  `json:"identity_token"`
+	Email         *string `json:"email"`
+	Nickname      string  `json:"nickname"`
+	AvatarURL     string  `json:"avatar_url"`
 }
 
 type GoogleLoginRequest struct {
-	GoogleID  string  `json:"google_id" binding:"required,min=3,max=100"`
-	Email     *string `json:"email"`
-	Nickname  string  `json:"nickname"`
-	AvatarURL string  `json:"avatar_url"`
+	GoogleID      string  `json:"google_id"`
+	IdentityToken string  `json:"identity_token"`
+	Email         *string `json:"email"`
+	Nickname      string  `json:"nickname"`
+	AvatarURL     string  `json:"avatar_url"`
 }
 
 type RefreshRequest struct {

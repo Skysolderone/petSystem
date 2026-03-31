@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/google/uuid"
 
@@ -12,11 +13,14 @@ import (
 	"petverse/server/internal/pkg/apperror"
 	petjwt "petverse/server/internal/pkg/jwt"
 	"petverse/server/internal/pkg/password"
+	"petverse/server/internal/pkg/socialauth"
 )
 
 type AuthService struct {
-	users  authUserRepository
-	tokens *petjwt.Manager
+	users          authUserRepository
+	tokens         *petjwt.Manager
+	appleVerifier  socialauth.Verifier
+	googleVerifier socialauth.Verifier
 }
 
 type authUserRepository interface {
@@ -30,11 +34,29 @@ type authUserRepository interface {
 	Update(ctx context.Context, user *model.User) error
 }
 
-func NewAuthService(users authUserRepository, tokens *petjwt.Manager) *AuthService {
-	return &AuthService{
+type AuthServiceOption func(*AuthService)
+
+func WithAppleVerifier(verifier socialauth.Verifier) AuthServiceOption {
+	return func(service *AuthService) {
+		service.appleVerifier = verifier
+	}
+}
+
+func WithGoogleVerifier(verifier socialauth.Verifier) AuthServiceOption {
+	return func(service *AuthService) {
+		service.googleVerifier = verifier
+	}
+}
+
+func NewAuthService(users authUserRepository, tokens *petjwt.Manager, options ...AuthServiceOption) *AuthService {
+	service := &AuthService{
 		users:  users,
 		tokens: tokens,
 	}
+	for _, option := range options {
+		option(service)
+	}
+	return service
 }
 
 func (s *AuthService) Register(ctx context.Context, req dto.RegisterRequest) (*model.User, petjwt.TokenPair, error) {
@@ -118,19 +140,46 @@ func (s *AuthService) LoginWithWechat(ctx context.Context, req dto.WechatLoginRe
 }
 
 func (s *AuthService) LoginWithApple(ctx context.Context, req dto.AppleLoginRequest) (*model.User, petjwt.TokenPair, error) {
-	user, err := s.users.GetByAppleID(ctx, req.AppleID)
+	appleID := strings.TrimSpace(req.AppleID)
+	email := req.Email
+	nickname := strings.TrimSpace(req.Nickname)
+	avatarURL := strings.TrimSpace(req.AvatarURL)
+
+	if strings.TrimSpace(req.IdentityToken) != "" {
+		identity, err := s.verifyIdentityToken(ctx, s.appleVerifier, req.IdentityToken, "apple")
+		if err != nil {
+			return nil, petjwt.TokenPair{}, err
+		}
+		if appleID != "" && appleID != identity.Subject {
+			return nil, petjwt.TokenPair{}, apperror.New(http.StatusBadRequest, "apple_subject_mismatch", "apple account does not match identity token")
+		}
+
+		appleID = identity.Subject
+		if email == nil && identity.Email != "" {
+			resolvedEmail := identity.Email
+			email = &resolvedEmail
+		}
+		if nickname == "" {
+			nickname = identity.Name
+		}
+	}
+	if appleID == "" {
+		return nil, petjwt.TokenPair{}, apperror.New(http.StatusBadRequest, "apple_id_required", "apple id or identity token is required")
+	}
+
+	user, err := s.users.GetByAppleID(ctx, appleID)
 	if err != nil {
 		return nil, petjwt.TokenPair{}, apperror.Wrap(http.StatusInternalServerError, "user_lookup_failed", "failed to query user", err)
 	}
-	if user == nil && req.Email != nil && *req.Email != "" {
-		existingByEmail, err := s.users.GetByEmail(ctx, *req.Email)
+	if user == nil && email != nil && *email != "" {
+		existingByEmail, err := s.users.GetByEmail(ctx, *email)
 		if err != nil {
 			return nil, petjwt.TokenPair{}, apperror.Wrap(http.StatusInternalServerError, "user_lookup_failed", "failed to query user", err)
 		}
 		if existingByEmail != nil {
 			user = existingByEmail
-			user.AppleID = &req.AppleID
-			applySocialProfile(user, req.Nickname, req.AvatarURL, req.Email)
+			user.AppleID = &appleID
+			applySocialProfile(user, nickname, avatarURL, email)
 			if err := s.users.Update(ctx, user); err != nil {
 				return nil, petjwt.TokenPair{}, apperror.Wrap(http.StatusInternalServerError, "update_user_failed", "failed to bind apple account", err)
 			}
@@ -139,17 +188,17 @@ func (s *AuthService) LoginWithApple(ctx context.Context, req dto.AppleLoginRequ
 
 	if user == nil {
 		user, err = s.createSocialUser(ctx, socialCreateInput{
-			Nickname:      firstNonEmpty(req.Nickname, "Apple 用户"),
-			AvatarURL:     req.AvatarURL,
-			AppleID:       &req.AppleID,
-			Email:         req.Email,
+			Nickname:      firstNonEmpty(nickname, "Apple 用户"),
+			AvatarURL:     avatarURL,
+			AppleID:       &appleID,
+			Email:         email,
 			DefaultSecret: "apple",
 		})
 		if err != nil {
 			return nil, petjwt.TokenPair{}, err
 		}
-	} else if profileNeedsRefresh(user, req.Nickname, req.AvatarURL, req.Email) {
-		applySocialProfile(user, req.Nickname, req.AvatarURL, req.Email)
+	} else if profileNeedsRefresh(user, nickname, avatarURL, email) {
+		applySocialProfile(user, nickname, avatarURL, email)
 		if err := s.users.Update(ctx, user); err != nil {
 			return nil, petjwt.TokenPair{}, apperror.Wrap(http.StatusInternalServerError, "update_user_failed", "failed to update social profile", err)
 		}
@@ -159,19 +208,49 @@ func (s *AuthService) LoginWithApple(ctx context.Context, req dto.AppleLoginRequ
 }
 
 func (s *AuthService) LoginWithGoogle(ctx context.Context, req dto.GoogleLoginRequest) (*model.User, petjwt.TokenPair, error) {
-	user, err := s.users.GetByGoogleID(ctx, req.GoogleID)
+	googleID := strings.TrimSpace(req.GoogleID)
+	email := req.Email
+	nickname := strings.TrimSpace(req.Nickname)
+	avatarURL := strings.TrimSpace(req.AvatarURL)
+
+	if strings.TrimSpace(req.IdentityToken) != "" {
+		identity, err := s.verifyIdentityToken(ctx, s.googleVerifier, req.IdentityToken, "google")
+		if err != nil {
+			return nil, petjwt.TokenPair{}, err
+		}
+		if googleID != "" && googleID != identity.Subject {
+			return nil, petjwt.TokenPair{}, apperror.New(http.StatusBadRequest, "google_subject_mismatch", "google account does not match identity token")
+		}
+
+		googleID = identity.Subject
+		if email == nil && identity.Email != "" {
+			resolvedEmail := identity.Email
+			email = &resolvedEmail
+		}
+		if nickname == "" {
+			nickname = identity.Name
+		}
+		if avatarURL == "" {
+			avatarURL = identity.Picture
+		}
+	}
+	if googleID == "" {
+		return nil, petjwt.TokenPair{}, apperror.New(http.StatusBadRequest, "google_id_required", "google id or identity token is required")
+	}
+
+	user, err := s.users.GetByGoogleID(ctx, googleID)
 	if err != nil {
 		return nil, petjwt.TokenPair{}, apperror.Wrap(http.StatusInternalServerError, "user_lookup_failed", "failed to query user", err)
 	}
-	if user == nil && req.Email != nil && *req.Email != "" {
-		existingByEmail, err := s.users.GetByEmail(ctx, *req.Email)
+	if user == nil && email != nil && *email != "" {
+		existingByEmail, err := s.users.GetByEmail(ctx, *email)
 		if err != nil {
 			return nil, petjwt.TokenPair{}, apperror.Wrap(http.StatusInternalServerError, "user_lookup_failed", "failed to query user", err)
 		}
 		if existingByEmail != nil {
 			user = existingByEmail
-			user.GoogleID = &req.GoogleID
-			applySocialProfile(user, req.Nickname, req.AvatarURL, req.Email)
+			user.GoogleID = &googleID
+			applySocialProfile(user, nickname, avatarURL, email)
 			if err := s.users.Update(ctx, user); err != nil {
 				return nil, petjwt.TokenPair{}, apperror.Wrap(http.StatusInternalServerError, "update_user_failed", "failed to bind google account", err)
 			}
@@ -180,17 +259,17 @@ func (s *AuthService) LoginWithGoogle(ctx context.Context, req dto.GoogleLoginRe
 
 	if user == nil {
 		user, err = s.createSocialUser(ctx, socialCreateInput{
-			Nickname:      firstNonEmpty(req.Nickname, "Google 用户"),
-			AvatarURL:     req.AvatarURL,
-			GoogleID:      &req.GoogleID,
-			Email:         req.Email,
+			Nickname:      firstNonEmpty(nickname, "Google 用户"),
+			AvatarURL:     avatarURL,
+			GoogleID:      &googleID,
+			Email:         email,
 			DefaultSecret: "google",
 		})
 		if err != nil {
 			return nil, petjwt.TokenPair{}, err
 		}
-	} else if profileNeedsRefresh(user, req.Nickname, req.AvatarURL, req.Email) {
-		applySocialProfile(user, req.Nickname, req.AvatarURL, req.Email)
+	} else if profileNeedsRefresh(user, nickname, avatarURL, email) {
+		applySocialProfile(user, nickname, avatarURL, email)
 		if err := s.users.Update(ctx, user); err != nil {
 			return nil, petjwt.TokenPair{}, apperror.Wrap(http.StatusInternalServerError, "update_user_failed", "failed to update social profile", err)
 		}
@@ -268,6 +347,18 @@ func (s *AuthService) issueTokenPair(user *model.User) (*model.User, petjwt.Toke
 		return nil, petjwt.TokenPair{}, apperror.Wrap(http.StatusInternalServerError, "token_issue_failed", "failed to issue tokens", err)
 	}
 	return user, tokenPair, nil
+}
+
+func (s *AuthService) verifyIdentityToken(ctx context.Context, verifier socialauth.Verifier, identityToken, provider string) (*socialauth.Identity, error) {
+	if verifier == nil {
+		return nil, apperror.New(http.StatusNotImplemented, provider+"_identity_not_configured", provider+" identity token login is not configured")
+	}
+
+	identity, err := verifier.VerifyIDToken(ctx, identityToken)
+	if err != nil {
+		return nil, apperror.Wrap(http.StatusUnauthorized, provider+"_identity_invalid", "identity token is invalid", err)
+	}
+	return identity, nil
 }
 
 func applySocialProfile(user *model.User, nickname, avatarURL string, email *string) {
