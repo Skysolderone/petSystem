@@ -1,0 +1,69 @@
+app:
+  env: dev
+  name: petverse-api
+
+http:
+  host: 0.0.0.0
+  port: 8080
+  read_timeout: 10s
+  write_timeout: 15s
+  shutdown_timeout: 10s
+
+database:
+  host: 127.0.0.1
+  port: 5432
+  user: postgres
+  password: postgres
+  name: petverse
+  sslmode: disable
+  timezone: Asia/Shanghai
+
+timeseries:
+  enabled: false
+  host: 127.0.0.1
+  port: 5433
+  user: postgres
+  password: postgres
+  name: petverse_ts
+  sslmode: disable
+  timezone: Asia/Shanghai
+
+redis:
+  host: 127.0.0.1
+  port: 6379
+  password: ""
+  db: 0
+
+nats:
+  enabled: false
+  url: nats://127.0.0.1:4222
+
+jwt:
+  issuer: petverse
+  secret: change-me-in-production
+  access_ttl: 15m
+  refresh_ttl: 168h
+
+ai:
+  provider: local
+  base_url: ""
+  api_key: ""
+  model: ""
+  temperature: 0.2
+  timeout: 20s
+
+push:
+  provider: none
+  expo_url: https://exp.host/--/api/v2/push/send
+  access_token: ""
+  timeout: 10s
+
+object_storage:
+  provider: local
+  local_dir: ./uploads
+  endpoint: 127.0.0.1:9000
+  access_key: minioadmin
+  secret_key: minioadmin
+  use_ssl: false
+  bucket: petverse
+  public_base_url: http://127.0.0.1:9000

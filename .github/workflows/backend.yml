@@ -1,0 +1,83 @@
+name: Backend CI
+
+on:
+  pull_request:
+    paths:
+      - "server/**"
+      - "Makefile"
+      - "docker-compose.yml"
+      - ".github/workflows/backend.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "server/**"
+      - "Makefile"
+      - "docker-compose.yml"
+      - ".github/workflows/backend.yml"
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+
+      - name: Run Tests
+        run: go test ./... -count=1
+
+      - name: Build API
+        run: go build ./...
+
+  integration-smoke:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: petverse
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d petverse"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+
+      - name: Run Migrations
+        run: go run ./cmd/migrate -config ./config/config.yaml up
+
+      - name: Start API
+        run: nohup go run ./cmd/api -config ./config/config.yaml >/tmp/petverse-api.log 2>&1 &
+
+      - name: Run Smoke Test
+        run: go run ./cmd/smoke -base-url http://127.0.0.1:8080/api/v1 -wait 45s
+
+      - name: Print API Log On Failure
+        if: failure()
+        run: cat /tmp/petverse-api.log
